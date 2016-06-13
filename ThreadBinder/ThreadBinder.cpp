@@ -52,6 +52,12 @@ kern_return_t ThreadBinder::doBind(unsigned int thread, int cpu) {
 	
 	if (cpu < 0 || (unsigned int)cpu >= real_ncpus) // sanity check
 		return KERN_FAILURE;
+	if (cpu == -1)
+		proc = (struct proc*)PROCESSOR_NULL;
+	else if (cpu >= 0)
+		proc = (struct proc*)org_cpu_to_processor(cpu);
+	else
+		return KERN_FAILURE;
 	
 	if (thread == MACH_PORT_NULL) {
 		SYSLOG("thread being bound is null");
@@ -60,7 +66,6 @@ kern_return_t ThreadBinder::doBind(unsigned int thread, int cpu) {
 	
 	kern_return_t ret = KERN_FAILURE;
 	
-	proc = (struct proc*)org_cpu_to_processor(cpu);
 	ml_set_interrupts_enabled(false);
 	
 	thread_t curr = current_thread();
@@ -83,13 +88,8 @@ exit:
 	return ret;
 }
 
-/* FIXME */
 kern_return_t ThreadBinder::doUnbind(unsigned int thread) {
-	if (current_thread() == org_port_name_to_thread(thread)) {
-		org_thread_bind(PROCESSOR_NULL);
-		return KERN_SUCCESS;
-	} 
-	return KERN_FAILURE;
+	return doBind(thread, -1);
 }
 
 #undef super
