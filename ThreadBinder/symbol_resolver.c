@@ -1,13 +1,5 @@
 #include "symbol_resolver.h"
 
-//
-//  symbol_resolver.c
-//  vmxsupport
-//
-//  Created by Pb on 19/08/15.
-//  Copyright (c) 2015 Pb. All rights reserved.
-//
-
 /*
  * ________
  * \_____  \   ____ ___.__.___  ___
