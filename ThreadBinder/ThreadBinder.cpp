@@ -50,11 +50,9 @@ extern "C" {
 kern_return_t ThreadBinder::doBind(unsigned int thread, int cpu) {
 	struct proc* proc = nullptr;
 	
-	if (cpu < 0 || (unsigned int)cpu >= real_ncpus) // sanity check
-		return KERN_FAILURE;
 	if (cpu == -1)
 		proc = (struct proc*)PROCESSOR_NULL;
-	else if (cpu >= 0)
+	else if (cpu >= 0 && (unsigned int)cpu < real_ncpus)
 		proc = (struct proc*)org_cpu_to_processor(cpu);
 	else
 		return KERN_FAILURE;
