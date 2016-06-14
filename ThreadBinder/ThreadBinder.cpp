@@ -1,8 +1,5 @@
 #include <IOKit/IOLib.h>
 #include <mach/kern_return.h>
-#include <i386/machine_routines.h>
-#include <kern/kern_types.h>
-#include <i386/machine_routines.h>
 
 #include "ThreadBinder.h"
 #include "symbol_resolver.h"
@@ -42,9 +39,6 @@ extern "C" {
 	extern unsigned int real_ncpus;
 	extern int cpu_number(void);
 }
-
-#define PROCESSOR_OFF_LINE       0   /* Not available */
-#define PROCESSOR_SHUTDOWN      1   /* Going off-line */
 
 /* Derived from chud/chud_thread.c */
 kern_return_t ThreadBinder::doBind(unsigned int thread, int cpu) {
@@ -116,12 +110,11 @@ IOReturn ThreadBinderUserClient::clientClose() {
 void ThreadBinderUserClient::stop(IOService* provider) {
 	task = nullptr;
 	binder = nullptr;
-	
 	super::stop(provider);
 }
 
 IOExternalMethod* ThreadBinderUserClient::getTargetAndMethodForIndex(IOService **tgt, uint32_t idx) {
-	SYSLOG("%s: %d", __PRETTY_FUNCTION__, idx);
+//	SYSLOG("%s: %d", __PRETTY_FUNCTION__, idx);
 	return super::getTargetAndMethodForIndex(tgt, idx);
 }
 
@@ -130,7 +123,7 @@ kern_return_t ThreadBinderUserClient::externalMethod(uint32_t selector, IOExtern
 	IOReturn err = kIOReturnError;
 //	SYSLOG("ThreadBinderUserClient::externalMethod(%d, ...)", selector);
 	switch (selector) {
-		SYSLOG("args: 0x%p, args->scalarInputCount: 0x%x, args->scalarOutputCount: 0x%x", args, args ? args->scalarInputCount : 0,  args ? args->scalarOutputCount : 0);
+//		SYSLOG("args: 0x%p, args->scalarInputCount: 0x%x, args->scalarOutputCount: 0x%x", args, args ? args->scalarInputCount : 0,  args ? args->scalarOutputCount : 0);
 		case 0: {
 			if (args && args->scalarInputCount == 2) {
 				err = ThreadBinderUserClient::bind((unsigned int)args->scalarInput[0], (uint32_t)args->scalarInput[1]);
