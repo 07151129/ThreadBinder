@@ -4,7 +4,7 @@
 
 class ThreadBinder : public IOService {
 	OSDeclareDefaultStructors(ThreadBinder);
-		
+	
 public:
 	virtual bool start(IOService* provider);
 	virtual void stop(IOService* provider);

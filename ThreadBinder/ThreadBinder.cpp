@@ -6,6 +6,13 @@
 #include "util.h"
 #include "symbols.h"
 
+extern "C" {
+	extern unsigned int real_ncpus;
+	extern int cpu_number(void);
+	
+	extern void mp_rendezvous_no_intrs(void (*action_func)(void *),void *arg);
+}
+
 #define super IOService
 OSDefineMetaClassAndStructors(ThreadBinder, IOService)
 
@@ -29,25 +36,36 @@ void ThreadBinder::stop(IOService* provider) {
 	super::stop(provider);
 }
 
-struct proc {
-	void* unu0;
-	void* unu1;
-	int state;
+struct binding {
+	thread_t thread;
+	proc_t proc;
+	int cpu;
 };
 
-extern "C" {
-	extern unsigned int real_ncpus;
-	extern int cpu_number(void);
+static
+void bind_rendezv_action(void* data) {
+	binding* bind = (binding*)data;
+	if (__builtin_expect(bind->cpu != cpu_number(), true))
+		return;
+	
+	thread_t curr = current_thread();
+	
+	if (curr != bind->thread) {
+		org_machine_set_current_thread(bind->thread);
+		org_thread_bind(bind->proc);
+		org_machine_set_current_thread(curr);
+	} else
+		org_thread_bind(bind->proc);
 }
 
 /* Derived from chud/chud_thread.c */
 kern_return_t ThreadBinder::doBind(unsigned int thread, int cpu) {
-	struct proc* proc = nullptr;
+	proc_t proc = nullptr;
 	
 	if (cpu == -1)
-		proc = (struct proc*)PROCESSOR_NULL;
+		proc = (proc_t)PROCESSOR_NULL;
 	else if (cpu >= 0 && (unsigned int)cpu < real_ncpus)
-		proc = (struct proc*)org_cpu_to_processor(cpu);
+		proc = (proc_t)org_cpu_to_processor(cpu);
 	else
 		return KERN_FAILURE;
 	
@@ -56,28 +74,18 @@ kern_return_t ThreadBinder::doBind(unsigned int thread, int cpu) {
 		return KERN_FAILURE;
 	}
 	
-	kern_return_t ret = KERN_FAILURE;
-	
-	ml_set_interrupts_enabled(false);
-	
-	thread_t curr = current_thread();
 	thread_t target = org_port_name_to_thread(thread);
+	if (target == THREAD_NULL)
+		return KERN_FAILURE;
 	
-	if (curr != target) {
-		org_machine_set_current_thread(target); /* Interrupts disabled, no need to lock? */
-		
-		org_thread_bind(proc);
-		
-		org_machine_set_current_thread(curr);
-	} else
-		org_thread_bind(proc);
+	/* Even if there are multiple requests, rendezvous will wait,
+	 * so the access to bind is always synchronised
+	 */
 	
-	ret = KERN_SUCCESS;
-	
-exit:
-	ml_set_interrupts_enabled(true);
+	binding bind = {target, proc, cpu};
+	mp_rendezvous_no_intrs(bind_rendezv_action, &bind);
 
-	return ret;
+	return KERN_SUCCESS;
 }
 
 kern_return_t ThreadBinder::doUnbind(unsigned int thread) {
@@ -147,6 +155,7 @@ kern_return_t ThreadBinderUserClient::bind(unsigned int thread, int cpu) {
 		SYSLOG("wtf, no binder?");
 		return KERN_FAILURE;
 	}
+	/* FIXME: Check mach_port_guard */
 	return binder->doBind(thread, cpu);
 }
 
