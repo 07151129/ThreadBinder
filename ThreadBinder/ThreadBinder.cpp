@@ -9,6 +9,8 @@
 #define super IOService
 OSDefineMetaClassAndStructors(ThreadBinder, IOService)
 
+static IOSimpleLock* lck;
+
 bool ThreadBinder::start(IOService* provider) {
 	if (!super::start(provider))
 		return false;
@@ -20,12 +22,18 @@ bool ThreadBinder::start(IOService* provider) {
 		SYSLOG("failed to resolve symbols");
 		return false;
 	}
+	if (!lck) {
+		lck = IOSimpleLockAlloc();
+		IOSimpleLockInit(lck);
+	}
 	registerService();
 	return true;
 }
 
 void ThreadBinder::stop(IOService* provider) {
 	SYSLOG("stopping");
+	IOSimpleLockFree(lck);
+	lck = nullptr;
 	super::stop(provider);
 }
 
@@ -55,8 +63,11 @@ kern_return_t ThreadBinder::doBind(unsigned int thread, int cpu) {
 		SYSLOG("thread being bound is null");
 		return KERN_FAILURE;
 	}
-	
+
 	kern_return_t ret = KERN_FAILURE;
+	
+	if (!IOSimpleLockTryLock(lck))
+		return ret;
 	
 	ml_set_interrupts_enabled(false);
 	
@@ -73,8 +84,7 @@ kern_return_t ThreadBinder::doBind(unsigned int thread, int cpu) {
 		org_thread_bind(proc);
 	
 	ret = KERN_SUCCESS;
-	
-exit:
+	IOSimpleLockUnlock(lck);
 	ml_set_interrupts_enabled(true);
 
 	return ret;
