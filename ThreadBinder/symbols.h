@@ -7,7 +7,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-	kern_return_t resolve_symbols();
+	kern_return_t resolve_symbols(void);
 #undef ORG
 #ifdef __cplusplus
 }

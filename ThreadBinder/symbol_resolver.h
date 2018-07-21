@@ -5,6 +5,8 @@
 #include <sys/vnode.h>
 #include <mach/vm_map.h>
 
+#include <stdbool.h>
+
 // amount of mach-o header to read
 #ifndef HEADER_SIZE
 #define HEADER_SIZE         PAGE_SIZE_64*2
@@ -24,6 +26,8 @@ typedef struct kernel_info {
 	// other info from the header we might need
 	uint64_t text_size;                  // size of __text section to disassemble
 	struct mach_header_64 *mh;           // ptr to mach-o header of running kernel
+    bool kaslr_slide_set, prelink_slid;
+    mach_vm_address_t prelink_vmaddr;
 } kernel_info;
 
 #ifdef __cplusplus

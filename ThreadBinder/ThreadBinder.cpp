@@ -65,27 +65,23 @@ kern_return_t ThreadBinder::doBind(unsigned int thread, int cpu) {
 	}
 
 	kern_return_t ret = KERN_FAILURE;
-	
+
+    /* Holding a spinlock will disable interrupts */
 	if (!IOSimpleLockTryLock(lck))
 		return ret;
-	
-	ml_set_interrupts_enabled(false);
 	
 	thread_t curr = current_thread();
 	thread_t target = org_port_name_to_thread(thread);
 	
 	if (curr != target) {
-		org_machine_set_current_thread(target); /* Interrupts disabled, no need to lock? */
-		
+		org_machine_set_current_thread(target);
 		org_thread_bind(proc);
-		
 		org_machine_set_current_thread(curr);
 	} else
 		org_thread_bind(proc);
 	
 	ret = KERN_SUCCESS;
 	IOSimpleLockUnlock(lck);
-	ml_set_interrupts_enabled(true);
 
 	return ret;
 }

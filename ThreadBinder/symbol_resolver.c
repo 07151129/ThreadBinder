@@ -36,6 +36,21 @@
  *
  */
 
+/**
+ Copyright (c) 2016-2018, vit9696
+ All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+ 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+ 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+ 3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+**/
+
 #include <string.h>
 #include <sys/param.h>
 #include <sys/malloc.h>
@@ -48,6 +63,7 @@
 #include <mach-o/fat.h>
 #include <mach/vm_param.h>
 #include <mach/mach_types.h>
+#include <IOKit/IOLib.h>
 
 #include "symbol_resolver.h"
 
@@ -64,23 +80,12 @@ kernel_info gkinfo;
 // local prototypes
 static kern_return_t process_kernel_mach_header(void *kernel_header, kernel_info *kinfo);
 static kern_return_t get_kernel_linkedit(vnode_t kernel_vnode, vfs_context_t ctxt, kernel_info *kinfo);
-static void get_running_text_address(kernel_info *kinfo);
+static kern_return_t get_running_text_address(kernel_info *kinfo, mach_vm_address_t slide);
 static boolean_t is_current_kernel(void *kernel_header);
+mach_vm_address_t find_kernel_base(void);
 
-// 16 bytes IDT descriptor, used for 32 and 64 bits kernels (64 bit capable cpus!)
-struct descriptor_idt {
-	uint16_t offset_low;
-	uint16_t seg_selector;
-	uint8_t reserved;
-	uint8_t flag;
-	uint16_t offset_middle;
-	uint32_t offset_high;
-	uint32_t reserved2;
-};
-
-void get_addr_idt (mach_vm_address_t* idt);
-mach_vm_address_t calculate_int80address(const mach_vm_address_t idt_address);
-mach_vm_address_t find_kernel_base(const mach_vm_address_t int80_address);
+/* Kernel slide is aligned by 20 bits */
+#define KASLR_ALIGNMENT 0x100000
 
 kern_return_t enable_wp(boolean_t enable);
 
@@ -131,8 +136,7 @@ kern_return_t init_kernel_info(kernel_info *kinfo) {
 	if (error) goto failure;
 	
 	// compute kaslr slide
-	get_running_text_address(kinfo);
-	kinfo->kaslr_slide = kinfo->running_text_addr - kinfo->disk_text_addr;
+	get_running_text_address(kinfo, 0);
 	// we know the location of linkedit and offsets into symbols and their strings
 	// now we need to read linkedit into a buffer so we can process it later
 	// __LINKEDIT total size is around 1MB
@@ -315,13 +319,8 @@ static uint64_t *get_uuid(void *mach_header) {
  * check if a found kernel is the one we are running atm
  */
 static boolean_t is_current_kernel(void *kernel_header) {
-	// retrieves the address of the IDT
-	mach_vm_address_t idt_address = 0;
-	get_addr_idt(&idt_address);
-	// calculate the address of the int80 handler
-	mach_vm_address_t int80_address = calculate_int80address(idt_address);
 	// search backwards for the kernel base address (mach-o header)
-	mach_vm_address_t kernel_base = find_kernel_base(int80_address);
+	mach_vm_address_t kernel_base = find_kernel_base();
 	
 	uint64_t *uuid1 = get_uuid(kernel_header);
 	uint64_t *uuid2 = get_uuid((void*)kernel_base);
@@ -387,83 +386,71 @@ static kern_return_t process_kernel_mach_header(void *kernel_header, kernel_info
  * retrieve the __TEXT address of current loaded kernel so we can compute the KASLR slide
  * also the size of __text
  */
-static void get_running_text_address(kernel_info *kinfo) {
-	// retrieves the address of the IDT
-	mach_vm_address_t idt_address = 0;
-	get_addr_idt(&idt_address);
-	// calculate the address of the int80 handler
-	mach_vm_address_t int80_address = calculate_int80address(idt_address);
+static kern_return_t get_running_text_address(kernel_info *kinfo, mach_vm_address_t slide) {
 	// search backwards for the kernel base address (mach-o header)
-	mach_vm_address_t kernel_base = find_kernel_base(int80_address);
-	if (kernel_base != 0) {
-		// get the vm address of __TEXT segment
-		struct mach_header *mh = (struct mach_header*)kernel_base;
-		int header_size = sizeof(struct mach_header_64);
-		
-		struct load_command *load_cmd = NULL;
-		char *load_cmd_addr = (char*)kernel_base + header_size;
-		for (uint32_t i = 0; i < mh->ncmds; i++) {
-			load_cmd = (struct load_command*)load_cmd_addr;
-			if (load_cmd->cmd == LC_SEGMENT_64) {
-				struct segment_command_64 *seg_cmd = (struct segment_command_64*)load_cmd;
-				if (strncmp(seg_cmd->segname, "__TEXT", 16) == 0) {
-					kinfo->running_text_addr = seg_cmd->vmaddr;
-					kinfo->mh = (struct mach_header_64*)kernel_base;
-					break;
-				}
-			}
-			load_cmd_addr += load_cmd->cmdsize;
-		}
-	}
-}
+    mach_vm_address_t base = slide ? slide : find_kernel_base();
+    if (base) {
+        // get the vm address of __TEXT segment
+        struct mach_header_64* mh = (void*)(base);
+        size_t headerSize = sizeof(struct mach_header_64);
 
-/* retrieve the address of the IDT
- * should never be a bogus value?
- */
-void get_addr_idt(mach_vm_address_t *idt) {
-	uint8_t idtr[10];
-	__asm__ volatile ("sidt %0": "=m" (idtr));
-	*idt = *(mach_vm_address_t *)(idtr+2);
-}
+        struct load_command *loadCmd;
+        uint8_t* addr = (uint8_t *)(base) + headerSize;
+        uint8_t* endaddr = (uint8_t *)(base) + HEADER_SIZE;
+        for (uint32_t i = 0; i < mh->ncmds; i++) {
+            loadCmd = (struct load_command *)(addr);
 
-/*
- * calculate the address of the kernel int80 handler
- * using the IDT array
- */
-mach_vm_address_t calculate_int80address(const mach_vm_address_t idt_address) {
-	// find the address of interrupt 0x80 - EXCEP64_SPC_USR(0x80,hi64_unix_scall) @ osfmk/i386/idt64.s
-	struct descriptor_idt *int80_descriptor = NULL;
-	mach_vm_address_t int80_address = 0;
-	// we need to compute the address, it's not direct
-	// extract the stub address
-	
-	// retrieve the descriptor for interrupt 0x80
-	// the IDT is an array of descriptors
-	int80_descriptor = (struct descriptor_idt*)(idt_address+sizeof(struct descriptor_idt)*0x80);
-	uint64_t high = (unsigned long)int80_descriptor->offset_high << 32;
-	uint32_t middle = (unsigned int)int80_descriptor->offset_middle << 16;
-	int80_address = (mach_vm_address_t)(high + middle + int80_descriptor->offset_low);
-	
-	return int80_address;
+            if (addr + sizeof(struct load_command) > endaddr || addr + loadCmd->cmdsize > endaddr) {
+//                SYSLOG("mach", "running command %u of info %s exceeds header size", i, objectId ? objectId : "(null)");
+                return KERN_FAILURE;
+            }
+
+            if (loadCmd->cmd == LC_SEGMENT_64) {
+                struct segment_command_64 *segCmd = (struct segment_command_64 *)(loadCmd);
+                if (!strncmp(segCmd->segname, "__TEXT", sizeof(segCmd->segname))) {
+                    kinfo->running_text_addr = segCmd->vmaddr;
+                    kinfo->mh = mh;
+                    break;
+                }
+            }
+            addr += loadCmd->cmdsize;
+        }
+    }
+
+    // compute kaslr slide
+    if (kinfo->running_text_addr && kinfo->mh) {
+        if (!slide) // This is kernel image
+            kinfo->kaslr_slide = kinfo->running_text_addr - kinfo->disk_text_addr;
+        else // This is kext image
+            kinfo->kaslr_slide = kinfo->prelink_slid ? kinfo->prelink_vmaddr : slide;
+        kinfo->kaslr_slide_set = true;
+
+//        DBGLOG("mach", "aslr/load slide is 0x%llx", kaslr_slide);
+    } else {
+//        SYSLOG("mach", "couldn't find the running addresses");
+        return KERN_FAILURE;
+    }
+
+    return KERN_SUCCESS;
 }
 
 /*
  * find the kernel base address (mach-o header)
- * by searching backwards using the int80 handler as starting point
  */
-mach_vm_address_t find_kernel_base(const mach_vm_address_t int80_address) {
-	mach_vm_address_t temp_address = int80_address;
-	struct segment_command_64 *segment_command = NULL;
-	while (temp_address > 0) {
-		if (*(uint32_t*)(temp_address) == MH_MAGIC_64) {
+mach_vm_address_t find_kernel_base() {
+    mach_vm_address_t tmp = (mach_vm_address_t)IOLog;
+    // Align the address
+    tmp &= ~(KASLR_ALIGNMENT - 1);
+
+	while (true) {
+		if (*(uint32_t*)(tmp) == MH_MAGIC_64) {
 			// make sure it's the header and not some reference to the MAGIC number
-			segment_command = (struct segment_command_64*)(temp_address + sizeof(struct mach_header_64));
-			if (strncmp(segment_command->segname, "__TEXT", 16) == 0) {
-				return temp_address;
+			struct segment_command_64* segment_command = (struct segment_command_64*)(tmp + sizeof(struct mach_header_64));
+			if (strncmp(segment_command->segname, "__TEXT", strlen("__TEXT")) == 0) {
+				return tmp;
 			}
 		}
-		if (temp_address - 1 > temp_address) break;
-		temp_address--;
+        tmp -= KASLR_ALIGNMENT;
 	}
 	return 0;
 }
